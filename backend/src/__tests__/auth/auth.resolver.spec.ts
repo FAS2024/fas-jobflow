@@ -24,12 +24,15 @@ describe('AuthResolver', () => {
 
     resolver = module.get<AuthResolver>(AuthResolver);
     service = module.get<AuthService>(AuthService);
+
+    jest.clearAllMocks();
   });
 
   it('signup should return success message', async () => {
-    mockService.signup.mockResolvedValue({ message: 'User registered successfully' });
+    mockService.signup.mockResolvedValue(undefined); // service doesn't return anything
     const result = await resolver.signup('user', 'pass');
-    expect(result).toBe('User registered successfully');
+    expect(result).toEqual({ message: 'User registered successfully' });
+    expect(mockService.signup).toHaveBeenCalledWith('user', 'pass', 'REQUESTER');
   });
 
   it('login should return tokens', async () => {
@@ -37,21 +40,26 @@ describe('AuthResolver', () => {
     mockService.login.mockResolvedValue({ access_token: 'token1', refresh_token: 'token2' });
 
     const result = await resolver.login('user', 'pass');
-    const tokens = JSON.parse(result);
-    expect(tokens.access_token).toBeDefined();
-    expect(tokens.refresh_token).toBeDefined();
+    expect(result).toEqual({ access_token: 'token1', refresh_token: 'token2' });
+    expect(mockService.validateUser).toHaveBeenCalledWith('user', 'pass');
   });
 
   it('login should throw UnauthorizedException if user invalid', async () => {
     mockService.validateUser.mockResolvedValue(null);
+
     await expect(resolver.login('user', 'wrong')).rejects.toThrow(UnauthorizedException);
   });
 
   it('refreshToken should return new tokens', async () => {
     mockService.refreshToken.mockResolvedValue({ access_token: 'new1', refresh_token: 'new2' });
+
     const result = await resolver.refreshToken('old-token');
-    const tokens = JSON.parse(result);
-    expect(tokens.access_token).toBeDefined();
-    expect(tokens.refresh_token).toBeDefined();
+    expect(result).toEqual({ access_token: 'new1', refresh_token: 'new2' });
+    expect(mockService.refreshToken).toHaveBeenCalledWith('old-token');
+  });
+
+  it('secureData should return protected string', () => {
+    const result = resolver.secureData();
+    expect(result).toBe('This data is protected and requires JWT!');
   });
 });
