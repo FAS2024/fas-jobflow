@@ -87,7 +87,7 @@ docs(readme): update setup instructions
 
 ```bash
 git clone https://github.com/FAS2024/fas-jobflow.git
-cd fas_jobflow
+cd fas-jobflow
 ```
 
 ### Create branches
@@ -116,6 +116,118 @@ git push -u origin feature/auth-service
 * Secrets are managed via GitHub Actions and environment variables
 
 ---
+## 🔐 Authentication
+
+### 1. Signup
+
+Registers a new user. By default, role = `REQUESTER`.
+
+**Mutation**
+
+```graphql
+mutation {
+  signup(username: "testuser", password: "123456") {
+    message
+  }
+}
+```
+
+**Response**
+
+```json
+{
+  "data": {
+    "signup": {
+      "message": "User registered successfully"
+    }
+  }
+}
+```
+
+---
+
+### 2. Login
+
+Logs in a registered user and returns JWT tokens.
+
+**Mutation**
+
+```graphql
+mutation {
+  login(username: "testuser", password: "123456") {
+    access_token
+    refresh_token
+  }
+}
+```
+
+**Response**
+
+```json
+{
+  "data": {
+    "login": {
+      "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+    }
+  }
+}
+```
+
+---
+
+### 3. Refresh Token
+
+Generates a new pair of access and refresh tokens.
+
+**Mutation**
+
+```graphql
+mutation {
+  refreshToken(refreshToken: "PASTE_REFRESH_TOKEN_HERE") {
+    access_token
+    refresh_token
+  }
+}
+```
+
+**Response**
+
+```json
+{
+  "data": {
+    "refreshToken": {
+      "access_token": "new_access_token_here",
+      "refresh_token": "new_refresh_token_here"
+    }
+  }
+}
+```
+
+---
+
+### 4. Secure Query (requires JWT)
+
+Example of a protected query.
+
+**Query**
+
+```graphql
+query {
+  secureData
+}
+```
+
+When providing a valid `Authorization: Bearer <access_token>` header, the response will be:
+
+```json
+{
+  "data": {
+    "secureData": "This data is protected and requires JWT!"
+  }
+}
+```
+
 
 ## 🔍 Testing
 

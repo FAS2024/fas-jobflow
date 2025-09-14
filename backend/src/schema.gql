@@ -2,12 +2,22 @@
 # THIS FILE WAS AUTOMATICALLY GENERATED (DO NOT MODIFY)
 # ------------------------------------------------------
 
+type Tokens {
+  access_token: String!
+  refresh_token: String!
+}
+
+type AuthResponse {
+  message: String!
+  tokens: Tokens
+}
+
 type Query {
   secureData: String!
 }
 
 type Mutation {
-  signup(username: String!, password: String!): String!
-  login(username: String!, password: String!): String!
-  refreshToken(refreshToken: String!): String!
+  signup(username: String!, password: String!): AuthResponse!
+  login(username: String!, password: String!): Tokens!
+  refreshToken(refreshToken: String!): Tokens!
 }
