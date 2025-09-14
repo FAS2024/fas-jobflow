@@ -3,7 +3,6 @@ import {
   InMemoryCache,
   createHttpLink,
   from,
-  ApolloLink,
 } from '@apollo/client';
 import { setContext } from '@apollo/client/link/context';
 import { onError } from '@apollo/client/link/error';
@@ -13,11 +12,12 @@ import type { GraphQLError } from 'graphql';
 import { logger } from '../utils/logger';
 
 // --- GraphQL API ---
-const GRAPHQL_API = import.meta.env.VITE_API_URL || 'http://localhost:4000/graphql';
+const GRAPHQL_API = import.meta.env.VITE_API_URL;
+if (!GRAPHQL_API) throw new Error('VITE_API_URL must be defined in .env');
 
 // --- Token refresh state ---
 let isRefreshing = false;
-let pendingRequests: Array<() => void> = [];
+let pendingRequests: Array<(token: string | null) => void> = [];
 
 // --- JWT decode type ---
 interface JwtPayload {
@@ -25,74 +25,68 @@ interface JwtPayload {
   [key: string]: any;
 }
 
-// --- Utility: exponential backoff ---
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+// --- Exponential backoff ---
+const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
 
-// --- Silent logout (safe) ---
+// --- Silent logout ---
 const silentLogout = () => {
   localStorage.removeItem('token');
   localStorage.removeItem('refresh_token');
-  if (window.location.pathname !== '/login') {
-    window.location.href = '/login';
+  // Optionally clear app state/store here
+  window.location.href = '/login';
+};
+
+// --- Dev-only logger ---
+const devLog = (...args: any[]) => {
+  if (import.meta.env.MODE === 'development') {
+    logger.info(...args);
   }
 };
 
-// --- Refresh token helper with retry ---
-const refreshToken = async (attempt = 1, maxAttempts = 3): Promise<string | null> => {
+// --- Refresh token helper with dev-only logging ---
+export const refreshToken = async (
+  attempt = 1,
+  maxAttempts = 3
+): Promise<string | null> => {
   if (isRefreshing) {
+    devLog('[Auth] Token refresh already in progress, queueing request.');
     return new Promise(resolve =>
-      pendingRequests.push(() => resolve(localStorage.getItem('token')))
+      pendingRequests.push(() => resolve(null)) // resolve later with new token
     );
   }
 
-  const oldRefreshToken = localStorage.getItem('refresh_token');
-  if (!oldRefreshToken) {
-    silentLogout();
-    return null;
-  }
-
   isRefreshing = true;
+  devLog('[Auth] Refreshing token via HttpOnly cookie...');
+
   try {
-    const res = await fetch(GRAPHQL_API, {
+    const res = await fetch(`${GRAPHQL_API.replace('/graphql','')}/refresh-token`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({
-        query: `
-          mutation RefreshToken($token: String!) {
-            refreshToken(refreshToken: $token) {
-              access_token
-              refresh_token
-            }
-          }
-        `,
-        variables: { token: oldRefreshToken },
-      }),
+      credentials: 'include', // sends HttpOnly cookie automatically
     });
 
     const data = await res.json();
-    const newToken = data?.data?.refreshToken?.access_token ?? null;
-    const newRefreshToken = data?.data?.refreshToken?.refresh_token ?? null;
+    const newToken = data?.access_token ?? null;
+    if (!newToken) throw new Error('No access token returned');
 
-    if (!newToken || !newRefreshToken) throw new Error('No token returned from refresh');
-
-    localStorage.setItem('token', newToken);
-    localStorage.setItem('refresh_token', newRefreshToken);
-
-    pendingRequests.forEach(cb => cb());
+    // Resolve pending requests with the new token
+    pendingRequests.forEach(cb => cb(newToken));
     pendingRequests = [];
 
+    devLog('[Auth] Token refreshed successfully.');
     return newToken;
   } catch (err) {
-    logger.error(`[Auth] Refresh token attempt ${attempt} failed:`, err);
+    devLog('[Auth] Token refresh failed:', err);
 
     if (attempt < maxAttempts) {
-      await delay(Math.pow(2, attempt) * 500);
+      const backoff = Math.pow(2, attempt) * 500;
+      devLog(`[Auth] Retrying token refresh in ${backoff}ms (attempt ${attempt + 1})`);
+      await delay(backoff);
       return refreshToken(attempt + 1, maxAttempts);
     }
 
-    pendingRequests.forEach(cb => cb());
+    pendingRequests.forEach(cb => cb(null));
     pendingRequests = [];
+    devLog('[Auth] Max refresh attempts reached. Logging out.');
     silentLogout();
     return null;
   } finally {
@@ -100,8 +94,9 @@ const refreshToken = async (attempt = 1, maxAttempts = 3): Promise<string | null
   }
 };
 
-// --- Check if token is expired ---
-const isTokenExpired = (token: string | null) => {
+
+// --- Check if token expired ---
+export const isTokenExpired = (token: string | null) => {
   if (!token) return true;
   try {
     const decoded = jwtDecode<JwtPayload>(token);
@@ -111,12 +106,11 @@ const isTokenExpired = (token: string | null) => {
   }
 };
 
-// --- Auth Link ---
+// --- Auth link (concurrency-safe with setContext) ---
 const authLink = setContext(async (_, { headers }) => {
   let token = localStorage.getItem('token');
 
-  // Only refresh if not on login page
-  if (window.location.pathname !== '/login' && isTokenExpired(token)) {
+  if (isTokenExpired(token)) {
     token = await refreshToken();
   }
 
@@ -128,14 +122,14 @@ const authLink = setContext(async (_, { headers }) => {
   };
 });
 
-// --- Error Link ---
-// ---------- error link ----------
-export const errorLink: ApolloLink = onError(
+// --- Error link ---
+const errorLink = onError(
   (error: {
     graphQLErrors?: readonly GraphQLError[];
     networkError?: Error | null;
+    response?: any;
     operation?: any;
-    forward?: ((op: any) => any) | null;
+    forward?: any;
   }) => {
     const { graphQLErrors, networkError } = error;
 
@@ -143,47 +137,27 @@ export const errorLink: ApolloLink = onError(
       graphQLErrors.forEach((err: GraphQLError) => {
         const code = (err.extensions as Record<string, any>)?.code;
         if (code === 'UNAUTHENTICATED') {
-          logger.error('[Auth error]: token expired or unauthenticated');
-          // Inline logout for production
-          localStorage.removeItem('token');
-          window.location.href = '/login';
+          devLog('[Auth] GraphQL returned UNAUTHENTICATED, logging out.');
+          silentLogout();
         } else {
-          logger.error('[GraphQL error]:', err.message);
+          devLog('[GraphQL error]:', err.message);
         }
       });
     }
 
     if (networkError) {
-      logger.error('[Network error]:', networkError);
+      devLog('[Network error]:', networkError);
     }
   }
 );
 
-// const errorLink: ApolloLink = onError(({ graphQLErrors, networkError }) => {
-//   if (graphQLErrors?.length) {
-//     graphQLErrors.forEach((err: GraphQLError) => {
-//       const code = (err.extensions as Record<string, any>)?.code;
-//       if (code === 'UNAUTHENTICATED') {
-//         logger.error('[Auth error]: token expired or unauthenticated');
-//         silentLogout();
-//       } else {
-//         logger.error('[GraphQL error]:', err.message);
-//       }
-//     });
-//   }
-
-//   if (networkError) {
-//     logger.error('[Network error]:', networkError);
-//   }
-// });
-
-// --- HTTP Link ---
+// --- HTTP link ---
 const httpLink = createHttpLink({
   uri: GRAPHQL_API,
   credentials: 'include',
 });
 
-// --- Retry Link ---
+// --- Retry link ---
 const retryLink = new RetryLink({
   attempts: { max: 3, retryIf: error => !!error },
   delay: { initial: 300, max: 2000, jitter: true },
@@ -195,5 +169,5 @@ export const client = new ApolloClient({
   cache: new InMemoryCache(),
 });
 
-export { refreshToken, silentLogout, isTokenExpired };
 
+export { silentLogout};
