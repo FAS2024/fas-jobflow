@@ -1,0 +1,13 @@
+# ------------------------------------------------------
+# THIS FILE WAS AUTOMATICALLY GENERATED (DO NOT MODIFY)
+# ------------------------------------------------------
+
+type Query {
+  secureData: String!
+}
+
+type Mutation {
+  signup(username: String!, password: String!): String!
+  login(username: String!, password: String!): String!
+  refreshToken(refreshToken: String!): String!
+}
